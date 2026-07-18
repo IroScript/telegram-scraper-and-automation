@@ -29,7 +29,7 @@ class TelegramScraperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram Scraper - GUI")
-        self.root.geometry("700x600")
+        self.root.geometry("700x700")
         self.root.resizable(True, True)
 
         self.channels_list: List[str] = []
@@ -53,7 +53,7 @@ class TelegramScraperGUI:
 
     def setup_ui(self):
         # Title
-        title_label = tk.Label(self.root, text="Telegram Scraper - Buyer/Client Extractor",
+        title_label = tk.Label(self.root, text="Telegram Scraper - Universal Extractor",
                             font=("Arial", 14, "bold"))
         title_label.pack(pady=10)
 
@@ -113,10 +113,26 @@ class TelegramScraperGUI:
 
         self.mode_var = tk.StringVar(value="keyword")
 
-        tk.Radiobutton(mode_frame, text="Keyword-based Scraping (Buyer/Client Keywords)",
-                      variable=self.mode_var, value="keyword").pack(anchor="w", padx=10, pady=2)
+        tk.Radiobutton(mode_frame, text="Keyword-based Filtering (Comma-separated values)",
+                      variable=self.mode_var, value="keyword", command=self.toggle_keywords_state).pack(anchor="w", padx=10, pady=2)
         tk.Radiobutton(mode_frame, text="All Chats Scraping (Date Range Only)",
-                      variable=self.mode_var, value="all").pack(anchor="w", padx=10, pady=2)
+                      variable=self.mode_var, value="all", command=self.toggle_keywords_state).pack(anchor="w", padx=10, pady=2)
+
+        # Keywords Frame/Widget
+        self.keywords_frame = tk.Frame(mode_frame)
+        self.keywords_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Scrollable Text Area for keywords
+        self.keywords_text = tk.Text(self.keywords_frame, height=3, width=60, wrap="word")
+        self.keywords_text.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(self.keywords_frame, command=self.keywords_text.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.keywords_text.config(yscrollcommand=scrollbar.set)
+
+        # Populate with default keywords from config
+        default_kws = ", ".join(self.config.BUYER_KEYWORDS)
+        self.keywords_text.insert(tk.END, default_kws)
 
         # Date Range Frame
         date_frame = ttk.LabelFrame(self.root, text="Date Range")
@@ -270,8 +286,14 @@ class TelegramScraperGUI:
         config.OUTPUT_DIR = self.output_dir_var.get()
         config.FILE_PREFIX = "gui_scrape"
 
-        # Use keywords from config.py
-        config.BUYER_KEYWORDS = self.config.BUYER_KEYWORDS
+        # Extract keywords from GUI textbox
+        raw_keywords = self.keywords_text.get("1.0", tk.END).strip()
+        if raw_keywords:
+            config.BUYER_KEYWORDS = [kw.strip() for kw in raw_keywords.split(",") if kw.strip()]
+        else:
+            config.BUYER_KEYWORDS = []
+
+        config.SCRAPE_MODE = self.mode_var.get()
         config.SELLER_KEYWORDS = self.config.SELLER_KEYWORDS
 
         self.status_var.set("Connecting to Telegram...")
@@ -347,6 +369,13 @@ class TelegramScraperGUI:
         self.progress_var.set(progress)
         self.status_var.set(f"Scraping {channel}... Processed {total_processed} messages")
         self.progress_text_var.set(f"Progress: {progress:.2f}% | Processed: {total_processed} messages")
+
+    def toggle_keywords_state(self):
+        """Enable or disable keywords entry text box based on selected mode."""
+        if self.mode_var.get() == "keyword":
+            self.keywords_text.config(state="normal", bg="white")
+        else:
+            self.keywords_text.config(state="disabled", bg="#e0e0e0")
 
 
 def main():

@@ -116,6 +116,7 @@ class ScraperConfig:
     KEYWORD: str = ""  # Leave empty to scrape all messages
     MAX_MESSAGES: int = 1_000_000  # Limit per channel
     TIMEOUT_SECONDS: int = 21600  # Max 6 hours (21600 seconds)
+    SCRAPE_MODE: str = "keyword"  # "keyword" or "all"
 
     # ---- OUTPUT SETTINGS ----
     OUTPUT_FORMAT: str = "excel"  # "excel" or "parquet"
@@ -374,6 +375,13 @@ class TelegramScraper:
                 # Skip empty messages
                 if not message.text:
                     continue
+
+                # Filter by keyword if in keyword mode and keywords are provided
+                if getattr(self.config, 'SCRAPE_MODE', 'all') == 'keyword' and self.config.BUYER_KEYWORDS:
+                    text_lower = message.text.lower()
+                    matches_keyword = any(kw.strip().lower() in text_lower for kw in self.config.BUYER_KEYWORDS if kw.strip())
+                    if not matches_keyword:
+                        continue
 
                 # Extract reactions
                 reactions = await extract_reactions(message)
