@@ -17,6 +17,21 @@ config = ScraperConfig(
     OPENROUTER_API_KEY="sk-or-v1-...",  # Your OpenRouter API Key (string)
     BUYER_CATEGORIES=["Buyer", "Potential Buyer", "Urgent Buyer", "Bulk Buyer", "Wholesale Buyer"],
     BUYER_MESSAGE_TEMPLATE="Hello, I saw your post looking for services in the group. Please let me know if you still need help!",
+    ACCOUNTS=[
+        {
+            "API_ID": 12345678,
+            "API_HASH": "abcdef1234567890abcdef1234567890",
+            "PHONE": "+1234567890",
+            "SESSION": "session_main"
+        },
+        # You can add more accounts for round-robin rotation:
+        # {
+        #     "API_ID": 87654321,
+        #     "API_HASH": "fedcba0987654321fedcba0987654321",
+        #     "PHONE": "+1987654321",
+        #     "SESSION": "session_acc2"
+        # }
+    ],
 
     # === CHANNELS TO SCRAPE ===
     # You must be a member of these channels/groups
