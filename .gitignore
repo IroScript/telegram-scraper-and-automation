@@ -1,0 +1,22 @@
+# Telegram Scraper - gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output files
+output/
+*.xlsx
+*.parquet
+*.csv
+
+# Session and credentials
+*.session
+*.session-journal
+API Keys.txt
+*credential*
+*.env
+config.py
+PowerShell.txt
+temp_repo/
