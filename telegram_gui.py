@@ -29,7 +29,7 @@ class TelegramScraperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram Scraper - GUI")
-        self.root.geometry("700x700")
+        self.root.geometry("700x780")
         self.root.resizable(True, True)
 
         self.channels_list: List[str] = []
@@ -122,8 +122,8 @@ class TelegramScraperGUI:
         self.keywords_frame = tk.Frame(mode_frame)
         self.keywords_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Scrollable Text Area for keywords
-        self.keywords_text = tk.Text(self.keywords_frame, height=3, width=60, wrap="word")
+        # Scrollable Text Area for keywords (height increased to 7 for more space)
+        self.keywords_text = tk.Text(self.keywords_frame, height=7, width=60, wrap="word")
         self.keywords_text.pack(side="left", fill="both", expand=True)
 
         scrollbar = ttk.Scrollbar(self.keywords_frame, command=self.keywords_text.yview)

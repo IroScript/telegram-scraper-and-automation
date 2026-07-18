@@ -42,15 +42,12 @@ config = ScraperConfig(
     # These are used to automatically classify messages
     # Edit these lists to match your use case
     SELLER_KEYWORDS=[
-        "sell", "selling", "wts", "for sale", "stock available",
-        "available", "price", "dm me", "shipping", "posting",
-        "minimum order", "moq", "bulk", "wholesale", "retail",
-        "offer", "deal", "discount", "promotion"
+        "hiring", "recruiting", "vacancy", "open position", "career", "join our team", "we are hiring", "job post",
+        "招聘", "招人", "岗位", "人才", "নিয়োগ বিজ্ঞপ্তি", "কর্মসংস্থান"
     ],
     BUYER_KEYWORDS=[
-        "buy", "buying", "wtb", "looking for", "need", "want",
-        "seeking", "searching", "interested", "inquiry", "quote",
-        "pricing", "cost", "budget", "requirement", "specification"
+        "Need job", "Looking for job", "Want job", "Need work", "Looking for work", "Hire me", "Job vacancy", "Job offer", "Interview help", "Job interview", "Resume", "CV", "Apply for job", "Hiring", "Recruiting",
+        "চাকরি চাই", "চাকরি খুঁজছি", "কাজের সন্ধান", "ইন্টারভিউ", "সিভি", "求职", "招人", "招聘", "面试", "简历", "找工作"
     ]
 )
 
