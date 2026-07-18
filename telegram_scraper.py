@@ -339,8 +339,12 @@ class TelegramScraper:
 
     async def scrape_channel(self, channel: str):
         """Scrape a single channel/group."""
+        scrape_mode = getattr(self.config, 'SCRAPE_MODE', 'all')
         print(f"\n{'='*60}")
         print(f"Starting scrape: {channel}")
+        print(f"Mode: {scrape_mode.upper()}")
+        if scrape_mode == 'keyword' and self.config.BUYER_KEYWORDS:
+            print(f"Searching for keywords: {self.config.BUYER_KEYWORDS}")
         print(f"{'='*60}")
 
         channel_processed = 0
@@ -348,6 +352,12 @@ class TelegramScraper:
 
         try:
             async for message in self.client.iter_messages(channel, search=self.config.KEYWORD):
+                channel_scanned += 1
+                
+                # Print status every 50 checked messages to avoid looking frozen
+                if channel_scanned % 50 == 0:
+                    print(f"  [Scanning...] Checked {channel_scanned} messages in {channel}... ({self.total_processed} matches found)")
+
                 # Check user stop request
                 if self.stop_requested:
                     print("Scraping stopped by user request.")
@@ -377,11 +387,17 @@ class TelegramScraper:
                     continue
 
                 # Filter by keyword if in keyword mode and keywords are provided
-                if getattr(self.config, 'SCRAPE_MODE', 'all') == 'keyword' and self.config.BUYER_KEYWORDS:
+                matched_kw = "matched"
+                if scrape_mode == 'keyword' and self.config.BUYER_KEYWORDS:
                     text_lower = message.text.lower()
-                    matches_keyword = any(kw.strip().lower() in text_lower for kw in self.config.BUYER_KEYWORDS if kw.strip())
-                    if not matches_keyword:
+                    found_kw = None
+                    for kw in self.config.BUYER_KEYWORDS:
+                        if kw.strip() and kw.strip().lower() in text_lower:
+                            found_kw = kw.strip()
+                            break
+                    if not found_kw:
                         continue
+                    matched_kw = found_kw
 
                 # Extract reactions
                 reactions = await extract_reactions(message)
@@ -390,11 +406,14 @@ class TelegramScraper:
                 comments = await scrape_comments(self.client, channel, message.id)
 
                 # Classify message
-                classification = classify_message(
-                    message.text,
-                    self.config.SELLER_KEYWORDS,
-                    self.config.BUYER_KEYWORDS
-                )
+                if scrape_mode == 'keyword':
+                    classification = matched_kw
+                else:
+                    classification = classify_message(
+                        message.text,
+                        self.config.SELLER_KEYWORDS,
+                        self.config.BUYER_KEYWORDS
+                    )
 
                 # Convert UTC message date to Bangladesh local time (UTC+6) for display/saving
                 local_tz = timezone(timedelta(hours=6))
