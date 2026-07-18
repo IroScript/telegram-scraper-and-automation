@@ -331,7 +331,7 @@ class TelegramScraper:
         print(f"{'='*60}")
 
         # Print summary by classification
-        if 'Classification' in df.columns:
+        if getattr(self.config, 'SCRAPE_MODE', 'all') == 'keyword' and 'Classification' in df.columns:
             print("\nClassification Summary (before dedup):")
             print(df['Classification'].value_counts())
 
@@ -438,7 +438,8 @@ class TelegramScraper:
                 print(f"From {channel}: {channel_processed:05d} messages")
                 print(f"ID: {message.id:05d} | Date: {record['Date']}")
                 print(f"Total: {self.total_processed:05d} messages")
-                print(f"Classification: {classification.upper()}")
+                if getattr(self.config, 'SCRAPE_MODE', 'all') == 'keyword':
+                    print(f"Classification: {classification.upper()}")
                 print(f"{'-'*60}\n")
 
                 if self.progress_callback:
