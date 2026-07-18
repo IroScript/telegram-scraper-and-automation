@@ -118,6 +118,8 @@ class ScraperConfig:
     MAX_MESSAGES: int = 1_000_000  # Limit per channel
     TIMEOUT_SECONDS: int = 21600  # Max 6 hours (21600 seconds)
     SCRAPE_MODE: str = "keyword"  # "keyword" or "all"
+    BUYER_CATEGORIES: List[str] = ["Buyer", "Potential Buyer", "Urgent Buyer", "Bulk Buyer", "Wholesale Buyer"]
+    BUYER_MESSAGE_TEMPLATE: str = "Hello, I saw your post looking for services in the group. Please let me know if you still need help!"
 
     # ---- OUTPUT SETTINGS ----
     OUTPUT_FORMAT: str = "excel"  # "excel" or "parquet"

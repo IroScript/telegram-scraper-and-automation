@@ -15,6 +15,8 @@ config = ScraperConfig(
     PHONE="+1234567890",                # Your phone number with country code
     USERNAME="your_username",           # Your Telegram username (optional)
     OPENROUTER_API_KEY="sk-or-v1-...",  # Your OpenRouter API Key (string)
+    BUYER_CATEGORIES=["Buyer", "Potential Buyer", "Urgent Buyer", "Bulk Buyer", "Wholesale Buyer"],
+    BUYER_MESSAGE_TEMPLATE="Hello, I saw your post looking for services in the group. Please let me know if you still need help!",
 
     # === CHANNELS TO SCRAPE ===
     # You must be a member of these channels/groups
