@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import List
 
 # Import scraper components
-from telegram_scraper import ScraperConfig, TelegramScraper, remove_unsupported_characters, classify_message
+from telegram_scraper import ScraperConfig, TelegramScraper, remove_unsupported_characters, classify_message, check_credentials_and_open_drive
+check_credentials_and_open_drive()
 import pandas as pd
 
 # Default timezone - Asia/Dhaka (UTC+6)

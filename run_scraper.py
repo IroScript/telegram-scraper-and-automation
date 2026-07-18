@@ -5,8 +5,9 @@ then launches the scraper.
 """
 
 import asyncio
+from telegram_scraper import check_credentials_and_open_drive, TelegramScraper
+check_credentials_and_open_drive()
 from config import config
-from telegram_scraper import TelegramScraper
 
 OTP_CODE = "83423"
 

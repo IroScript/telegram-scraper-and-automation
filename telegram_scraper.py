@@ -21,6 +21,76 @@ from telethon.sync import TelegramClient
 from telethon.errors import FloodWaitError, ChannelPrivateError, UserNotParticipantError
 
 
+
+def check_credentials_and_open_drive():
+    """
+    Checks if config.py exists and contains valid credentials.
+    If not, opens the Google Drive link for downloading config.py,
+    creates a config.py template from config_example.py (if missing),
+    and exits the program with instructions.
+    """
+    import os
+    import sys
+    import shutil
+    import webbrowser
+    from pathlib import Path
+
+    drive_url = "https://drive.google.com/drive/folders/1VyiMKjcjf7ohEF5tpO2CW6tY9jt-T5FF?usp=sharing"
+    base_dir = Path(__file__).parent.resolve()
+    config_path = base_dir / "config.py"
+    example_path = base_dir / "config_example.py"
+
+    has_errors = False
+
+    # 1. Check if config.py exists
+    if not config_path.exists():
+        print("\n" + "="*80)
+        print(" [WARNING] config.py file is missing!")
+        print(" Please download your config.py credentials file from Google Drive:")
+        print(f" {drive_url}")
+        print(" and place it in the project root folder.")
+        print("="*80 + "\n")
+
+        # Create a default template config.py if example exists
+        if example_path.exists():
+            try:
+                shutil.copy(example_path, config_path)
+                print(f"Created a template config.py from config_example.py.")
+            except Exception as e:
+                print(f"Could not create template config.py: {e}")
+        has_errors = True
+    else:
+        # 2. Check if credentials inside config.py are still default/empty
+        try:
+            # We must import it dynamically to avoid caching issues or syntax/import errors at the top
+            sys.path.insert(0, str(base_dir))
+            if "config" in sys.modules:
+                del sys.modules["config"]
+            import config
+            conf = config.config
+            if (not conf.API_ID or conf.API_ID == 0 or conf.API_ID == 12345678 or
+                not conf.API_HASH or conf.API_HASH == "abcdef1234567890abcdef1234567890" or
+                not conf.PHONE or conf.PHONE == "+1234567890"):
+                print("\n" + "="*80)
+                print(" [WARNING] config.py contains default or empty credentials!")
+                print(" Please edit config.py or download the correct config.py from Google Drive:")
+                print(f" {drive_url}")
+                print("="*80 + "\n")
+                has_errors = True
+        except Exception as e:
+            print(f"Error loading config.py: {e}")
+            has_errors = True
+
+    if has_errors:
+        print("Opening Google Drive credentials folder in your browser...")
+        try:
+            webbrowser.open(drive_url)
+        except Exception as e:
+            print(f"Could not open browser: {e}")
+        print("\nExiting program. Please configure your credentials first.")
+        sys.exit(1)
+
+
 # =============================================================================
 # CONFIGURATION CLASS
 # =============================================================================
@@ -522,6 +592,7 @@ def validate_config(config: ScraperConfig) -> bool:
 
 
 def main():
+    check_credentials_and_open_drive()
     args = parse_args()
     config = build_config(args)
 
