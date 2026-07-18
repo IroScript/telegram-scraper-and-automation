@@ -14,6 +14,7 @@ config = ScraperConfig(
     API_HASH="abcdef1234567890abcdef1234567890",  # Your API Hash (string)
     PHONE="+1234567890",                # Your phone number with country code
     USERNAME="your_username",           # Your Telegram username (optional)
+    OPENROUTER_API_KEY="sk-or-v1-...",  # Your OpenRouter API Key (string)
 
     # === CHANNELS TO SCRAPE ===
     # You must be a member of these channels/groups

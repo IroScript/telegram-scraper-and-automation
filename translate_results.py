@@ -19,6 +19,14 @@ except Exception:
     pass
 
 def load_api_key():
+    # Try importing from config.py first
+    try:
+        from config import config
+        if hasattr(config, 'OPENROUTER_API_KEY') and config.OPENROUTER_API_KEY:
+            return config.OPENROUTER_API_KEY
+    except Exception:
+        pass
+
     if "OPENROUTER_API_KEY" in os.environ:
         return os.environ["OPENROUTER_API_KEY"]
     

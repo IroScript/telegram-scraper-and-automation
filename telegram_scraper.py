@@ -103,6 +103,7 @@ class ScraperConfig:
     API_HASH: str = ""  # e.g., "abcdef1234567890abcdef1234567890"
     PHONE: str = ""  # e.g., "+1234567890"
     USERNAME: str = ""  # Optional: your Telegram username (without @)
+    OPENROUTER_API_KEY: str = ""  # OpenRouter API Key for translation and reasoning
 
     # ---- SCRAPING PARAMETERS ----
     CHANNELS: List[str] = []  # e.g., ["@channel1", "@channel2", "https://t.me/channel3"]
