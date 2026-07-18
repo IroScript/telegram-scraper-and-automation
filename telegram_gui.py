@@ -29,7 +29,7 @@ class TelegramScraperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram Scraper - GUI")
-        self.root.geometry("700x780")
+        self.root.geometry("700x650")
         self.root.resizable(True, True)
 
         self.channels_list: List[str] = []
@@ -52,13 +52,46 @@ class TelegramScraperGUI:
             self.config = ScraperConfig()
 
     def setup_ui(self):
+        # Create a container frame to hold canvas and scrollbar
+        self.main_container = tk.Frame(self.root)
+        self.main_container.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(self.main_container, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.main_container, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = tk.Frame(self.canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            )
+        )
+
+        self.scrollable_frame_id = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Make the inner frame expand to the width of the canvas
+        self.canvas.bind(
+            "<Configure>",
+            lambda event: self.canvas.itemconfig(self.scrollable_frame_id, width=event.width)
+        )
+        
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # Bind mousewheel scrolling
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+
         # Title
-        title_label = tk.Label(self.root, text="Telegram Scraper - Universal Extractor",
+        title_label = tk.Label(self.scrollable_frame, text="Telegram Scraper - Universal Extractor",
                             font=("Arial", 14, "bold"))
         title_label.pack(pady=10)
 
         # API Credentials Frame
-        api_frame = ttk.LabelFrame(self.root, text="Telegram API Credentials")
+        api_frame = ttk.LabelFrame(self.scrollable_frame, text="Telegram API Credentials")
         api_frame.pack(fill="x", padx=10, pady=5)
 
         tk.Label(api_frame, text="API ID:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
@@ -77,7 +110,7 @@ class TelegramScraperGUI:
         phone_entry.grid(row=2, column=1, padx=5, pady=2, sticky="w")
 
         # Channels/Groups Frame
-        channel_frame = ttk.LabelFrame(self.root, text="Channels / Groups / Links")
+        channel_frame = ttk.LabelFrame(self.scrollable_frame, text="Channels / Groups / Links")
         channel_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         # Entry for adding channel
@@ -108,7 +141,7 @@ class TelegramScraperGUI:
             self.channels_listbox.insert(tk.END, channel)
 
         # Scraping Mode Frame
-        mode_frame = ttk.LabelFrame(self.root, text="Scraping Mode")
+        mode_frame = ttk.LabelFrame(self.scrollable_frame, text="Scraping Mode")
         mode_frame.pack(fill="x", padx=10, pady=5)
 
         self.mode_var = tk.StringVar(value="keyword")
@@ -135,7 +168,7 @@ class TelegramScraperGUI:
         self.keywords_text.insert(tk.END, default_kws)
 
         # Date Range Frame
-        date_frame = ttk.LabelFrame(self.root, text="Date Range")
+        date_frame = ttk.LabelFrame(self.scrollable_frame, text="Date Range")
         date_frame.pack(fill="x", padx=10, pady=5)
 
         # Date and Time selection in the same row
@@ -152,7 +185,7 @@ class TelegramScraperGUI:
         tk.Entry(date_frame, textvariable=self.time_end_var, width=8).grid(row=0, column=5, padx=5)
 
         # Output Options Frame
-        output_frame = ttk.LabelFrame(self.root, text="Output Options")
+        output_frame = ttk.LabelFrame(self.scrollable_frame, text="Output Options")
         output_frame.pack(fill="x", padx=10, pady=5)
 
         tk.Label(output_frame, text="Output Format:").pack(side="left", padx=5)
@@ -166,7 +199,7 @@ class TelegramScraperGUI:
         tk.Button(output_frame, text="Browse", command=self.browse_output).pack(side="left", padx=2)
 
         # Control Buttons
-        control_frame = tk.Frame(self.root)
+        control_frame = tk.Frame(self.scrollable_frame)
         control_frame.pack(fill="x", padx=10, pady=10)
 
         self.start_btn = tk.Button(control_frame, text="Start Scraping",
@@ -183,7 +216,7 @@ class TelegramScraperGUI:
                  bg="#607D8B", fg="white", font=("Arial", 10), width=10).pack(side="right", padx=5)
 
         # Progress Frame
-        progress_frame = ttk.LabelFrame(self.root, text="Progress")
+        progress_frame = ttk.LabelFrame(self.scrollable_frame, text="Progress")
         progress_frame.pack(fill="x", padx=10, pady=5)
 
         self.progress_var = tk.DoubleVar()
@@ -195,7 +228,7 @@ class TelegramScraperGUI:
 
         # Status Label
         self.status_var = tk.StringVar(value="Ready")
-        self.status_label = tk.Label(self.root, textvariable=self.status_var,
+        self.status_label = tk.Label(self.scrollable_frame, textvariable=self.status_var,
                                     relief="sunken", anchor="w")
         self.status_label.pack(fill="x", padx=10, pady=5)
 
