@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  telegram_collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telegram_buyer_collector
+    restart: unless-stopped
+    volumes:
+      # Persistent SQLite Database & Session Mounts
+      - ./buyers.db:/app/buyers.db
+      - ./buyers.db-wal:/app/buyers.db-wal
+      - ./buyers.db-shm:/app/buyers.db-shm
+      - ./tg_buyer_session.session:/app/tg_buyer_session.session
+      - ./.env:/app/.env:ro
+      - ./user_groups.json:/app/user_groups.json:ro
+      - ./.collector.lock:/app/.collector.lock
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: ["worker", "--limit", "15"]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M

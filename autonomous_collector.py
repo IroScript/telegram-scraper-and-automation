@@ -3,16 +3,16 @@
 Autonomous Telegram Buyer Collector & Persistent SQLite Scheduler
 File: autonomous_collector.py
 
-Architectural Governance & Compliance Standards:
-1. Single Worker Invariant: Uses fcntl flock (lock_manager.py) to prevent concurrent collector sessions.
-2. Persistent SQLite State Machine: All scheduling, checkpoints, and cooldowns are stored in buyers.db (scrape_state).
-3. Bounded Small Batches: Queries 10-20 messages per group (operational bounding, NOT a Telegram-endorsed safe limit).
-4. Per-Request Pacing: 1.0s to 5.0s randomized request delay layer.
-5. Server-Dictated FloodWait: Strictly honors server wait time (e.seconds) upon FloodWaitError.
-6. Post-Group Cooldown: 15s to 240s randomized pause between groups.
-7. Long-Cycle Pause: ~2 hour cooldown per group before re-querying.
-8. Crash-Resilient Resume: Recovers eligible groups and message checkpoints directly from SQLite upon restart.
-9. Zero Unfounded Claims: Adheres to platform reality; Telethon safe limits are unknown and API abuse is monitored server-side.
+Architectural Standards & Fault-Tolerant Exception Hierarchy:
+- Architecture-First: Docker / Host Supervisor -> Single Worker Lock -> SQLite WAL -> Persistent 110-Group State
+- Server response handling:
+  ├── Success -> checkpoint DB + post-group pause
+  ├── FloodWait -> server wait (e.seconds) -> DB global pause -> sleep -> resume
+  ├── Network error -> exponential retry (3 attempts) -> checkpoint as retryable -> advance
+  ├── Auth/session error -> FATAL STOP + alert (no infinite spin on bad session)
+  └── Unknown error -> checkpoint DB error status + cooldown -> next eligible group
+- Cooldown -> Next eligible group -> FOREVER RESUME LOOP
+- Operational Pacing: All delays are operational pacing, NOT guarantees against server-side abuse detection.
 """
 
 import sys
@@ -32,6 +32,11 @@ from telethon.errors import (
     ChannelPrivateError,
     UserNotParticipantError,
     ChatAdminRequiredError,
+    SessionPasswordNeededError,
+    AuthKeyInvalidError,
+    AuthKeyDuplicatedError,
+    UserDeactivatedError,
+    UserDeactivatedBanError,
     RPCError
 )
 
@@ -49,6 +54,11 @@ MARKETPLACE_KEYWORDS = [
     "buy", "sell", "market", "gv", "trade", "deal", "shop",
     "zone", "exchange", "gmail", "account", "service", "bulk", "order"
 ]
+
+
+class FatalAuthError(Exception):
+    """Raised when Telegram session credentials or authorization are revoked."""
+    pass
 
 
 class AutonomousBuyerCollector:
@@ -85,8 +95,7 @@ class AutonomousBuyerCollector:
         await self.client.connect()
 
         if not await self.client.is_user_authorized():
-            print("❌ Error: Telegram session is not authorized.")
-            return False
+            raise FatalAuthError("Telegram session is not authorized. Re-authentication required.")
 
         me = await self.client.get_me()
         print(f"📡 Connected to Telegram as: {me.first_name} (@{me.username or 'N/A'}, ID: {me.id})")
@@ -188,7 +197,13 @@ class AutonomousBuyerCollector:
         return None
 
     async def scan_single_group(self, group: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Scan one eligible group with bounded batch, pacing, and server-aware FloodWait."""
+        """
+        Scan one eligible group adhering strictly to the fault-tolerant exception hierarchy:
+        - FloodWait -> server wait (e.seconds) -> global DB pause -> sleep -> resume
+        - Network error -> exponential retry (3 attempts)
+        - Auth/session error -> FATAL STOP + alert
+        - Unknown error -> checkpoint DB error status + cooldown -> next group
+        """
         chat_id = group["chat_id"]
         title = group["chat_title"]
         username = group.get("chat_username")
@@ -199,57 +214,85 @@ class AutonomousBuyerCollector:
         max_seen_id = last_scraped_id
         new_buyers = []
 
-        try:
-            kwargs: Dict[str, Any] = {"limit": self.messages_per_group}
-            if last_scraped_id > 0:
-                kwargs["min_id"] = last_scraped_id
+        # 1. Network Retry Loop (Up to 3 attempts with exponential backoff)
+        max_net_retries = 3
+        messages_fetched = 0
 
-            messages_fetched = 0
-            async for msg in self.client.iter_messages(target_entity, **kwargs):
-                if not msg or not msg.text:
-                    continue
+        for attempt in range(1, max_net_retries + 1):
+            try:
+                kwargs: Dict[str, Any] = {"limit": self.messages_per_group}
+                if last_scraped_id > 0:
+                    kwargs["min_id"] = last_scraped_id
 
-                messages_fetched += 1
-                if msg.id > max_seen_id:
-                    max_seen_id = msg.id
+                async for msg in self.client.iter_messages(target_entity, **kwargs):
+                    if not msg or not msg.text:
+                        continue
 
-                b = await self.process_single_message(msg, chat_id, title, username or "")
-                if b:
-                    new_buyers.append(b)
+                    messages_fetched += 1
+                    if msg.id > max_seen_id:
+                        max_seen_id = msg.id
 
-                # Per-request pacing layer: randomized 1.0s to 5.0s delay
-                pacing_delay = random.uniform(self.min_request_delay, self.max_request_delay)
-                await asyncio.sleep(pacing_delay)
+                    b = await self.process_single_message(msg, chat_id, title, username or "")
+                    if b:
+                        new_buyers.append(b)
 
-            # Post-group randomized cooldown (15s to 240s) + long-cycle re-check interval (~2 hours)
-            cycle_cooldown = self.group_cycle_seconds + random.randint(60, 600)
-            database.update_group_checkpoint(
-                chat_id=chat_id,
-                last_message_id=max_seen_id,
-                cooldown_seconds=cycle_cooldown,
-                status="idle",
-                error=None
-            )
-            print(f"  ✓ Fetched {messages_fetched} messages. Qualified buyers: {len(new_buyers)}")
-            print(f"  ⏳ Group scheduled next check in ~{round(cycle_cooldown/3600, 1)} hours.")
+                    # Per-request pacing: 1.0s to 4.5s randomized delay
+                    pacing_delay = random.uniform(self.min_request_delay, self.max_request_delay)
+                    await asyncio.sleep(pacing_delay)
 
-        except FloodWaitError as e:
-            server_wait = e.seconds
-            print(f"  🚨 Server-dictated FloodWait: Telegram mandates waiting {server_wait} seconds.")
-            database.set_global_flood_wait(server_wait + 10)
-            print(f"  💤 Sleeping for exact server wait period: {server_wait + 5}s...")
-            await asyncio.sleep(server_wait + 5)
-        except (ChannelPrivateError, UserNotParticipantError):
-            print(f"  ⏭️ Skipped {title}: Private or non-participant.")
-            database.update_group_checkpoint(chat_id, max_seen_id, 86400, status="unauthorized", error="Not participant")
-        except ChatAdminRequiredError:
-            print(f"  ⏭️ Skipped {title}: Admin rights required.")
-            database.update_group_checkpoint(chat_id, max_seen_id, 86400, status="admin_required", error="Admin required")
-        except Exception as e:
-            print(f"  ⚠️ Warning on {title}: {type(e).__name__}: {e}")
-            database.update_group_checkpoint(chat_id, max_seen_id, 3600, status="error", error=str(e))
+                # Fetch succeeded
+                break
 
-        # Inter-group randomized cooldown
+            except (AuthKeyInvalidError, AuthKeyDuplicatedError, UserDeactivatedError, UserDeactivatedBanError, SessionPasswordNeededError) as auth_err:
+                # Fatal session error: Halt immediately to prevent session corruption
+                raise FatalAuthError(f"Fatal Telegram authentication/session error: {auth_err}")
+
+            except FloodWaitError as e:
+                server_wait = getattr(e, "seconds", 60)
+                print(f"  🚨 [SERVER FLOODWAIT] Telegram mandates waiting {server_wait} seconds.")
+                database.set_global_flood_wait(server_wait + 10)
+                print(f"  💤 Sleeping for exact server wait period: {server_wait + 5}s...")
+                await asyncio.sleep(server_wait + 5)
+                return new_buyers
+
+            except (ChannelPrivateError, UserNotParticipantError):
+                print(f"  ⏭️ Skipped {title}: Channel private or account is not a participant.")
+                database.update_group_checkpoint(chat_id, max_seen_id, 86400, status="unauthorized", error="Not participant")
+                return new_buyers
+
+            except ChatAdminRequiredError:
+                print(f"  ⏭️ Skipped {title}: Admin rights required to read.")
+                database.update_group_checkpoint(chat_id, max_seen_id, 86400, status="admin_required", error="Admin required")
+                return new_buyers
+
+            except (ConnectionError, asyncio.TimeoutError, RPCError) as net_err:
+                if attempt < max_net_retries:
+                    backoff = attempt * 4.0 + random.uniform(1.0, 3.0)
+                    print(f"  🔄 [NETWORK ERROR {attempt}/{max_net_retries}] {title}: {net_err}. Exponential backoff {round(backoff, 1)}s...")
+                    await asyncio.sleep(backoff)
+                else:
+                    print(f"  ❌ [NETWORK EXHAUSTED] {title} failed after {max_net_retries} attempts.")
+                    database.update_group_checkpoint(chat_id, max_seen_id, 1800, status="network_fail", error=str(net_err))
+                    return new_buyers
+
+            except Exception as e:
+                print(f"  ⚠️ [UNKNOWN ERROR] {title}: {type(e).__name__}: {e}")
+                database.update_group_checkpoint(chat_id, max_seen_id, 3600, status="error", error=str(e))
+                return new_buyers
+
+        # Success checkpointing: post-group cooldown and scheduled next eligibility
+        cycle_cooldown = self.group_cycle_seconds + random.randint(60, 600)
+        database.update_group_checkpoint(
+            chat_id=chat_id,
+            last_message_id=max_seen_id,
+            cooldown_seconds=cycle_cooldown,
+            status="idle",
+            error=None
+        )
+        print(f"  ✓ Fetched {messages_fetched} messages. Qualified buyers: {len(new_buyers)}")
+        print(f"  ⏳ Group scheduled next check in ~{round(cycle_cooldown/3600, 1)} hours.")
+
+        # Inter-group randomized operational pause (15s to 120s)
         group_pause = random.uniform(self.min_group_cooldown, self.max_group_cooldown)
         print(f"  ⏸️ Inter-group pause: {round(group_pause, 1)}s before evaluating scheduler...")
         await asyncio.sleep(group_pause)
@@ -257,12 +300,19 @@ class AutonomousBuyerCollector:
         return new_buyers
 
     async def run_worker_loop(self, max_cycles: Optional[int] = None) -> None:
-        """Continuous stateful scheduler loop. Resumes directly from SQLite state."""
+        """
+        Continuous stateful scheduler loop.
+        Never exits on non-fatal group errors; logs, checkpoints cooldown, and advances to next group.
+        Only halts on FatalAuthError to alert operator.
+        """
         if not await self.connect():
             return
 
         self.sync_target_groups_to_db()
         cycles_completed = 0
+
+        print("\n🚀 [STATEFUL SCHEDULER LOOP STARTED]")
+        print("💡 Architecture: Forever resume loop driven by persistent SQLite state machine.")
 
         try:
             while True:
@@ -280,11 +330,27 @@ class AutonomousBuyerCollector:
                     await asyncio.sleep(60)
                     continue
 
-                await self.scan_single_group(eligible_group)
-                cycles_completed += 1
+                try:
+                    await self.scan_single_group(eligible_group)
+                    cycles_completed += 1
+
+                except FatalAuthError as fatal:
+                    print(f"\n🛑 [FATAL AUTH STOP] {fatal}")
+                    print("Halting collector worker loop immediately to protect session. Operator intervention required.")
+                    break
+
+                except Exception as loop_err:
+                    print(f"⚠️ [ISOLATED WORKER ERROR] Loop caught {type(loop_err).__name__}: {loop_err}")
+                    database.update_group_checkpoint(
+                        chat_id=eligible_group["chat_id"],
+                        last_message_id=eligible_group.get("last_message_id", 0),
+                        cooldown_seconds=1800,
+                        status="error_isolated",
+                        error=str(loop_err)
+                    )
 
         except asyncio.CancelledError:
-            print("🛑 Collector worker stopped.")
+            print("🛑 Collector worker received cancellation signal. Cleaning up.")
         finally:
             await self.disconnect()
 
@@ -294,7 +360,6 @@ class AutonomousBuyerCollector:
             return
 
         self.sync_target_groups_to_db()
-        groups = database.get_schedule_summary()
         conn = database.get_connection()
         cur = conn.cursor()
         cur.execute("SELECT chat_id, chat_title, chat_username FROM scrape_state")
