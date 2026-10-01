@@ -348,6 +348,7 @@ class AutonomousBuyerCollector:
                         status="error_isolated",
                         error=str(loop_err)
                     )
+                    cycles_completed += 1
 
         except asyncio.CancelledError:
             print("🛑 Collector worker received cancellation signal. Cleaning up.")
