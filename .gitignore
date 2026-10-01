@@ -27,4 +27,6 @@ PowerShell.txt
 temp_repo/
 openRouterAPIKey.txt
 *APIKey*
-
+*.db
+*.db-journal
+latest_buyer_report.json

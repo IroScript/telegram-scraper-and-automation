@@ -393,30 +393,21 @@ class LLMBuyerAnalyzer:
                 "slot_used": 0
             }
 
-        prompt = f"""You are an expert lead qualification AI. Analyze the following raw Telegram message to determine if the author wants to BUY, HIRE, or PURCHASE a product or service (Buyer Lead).
+        prompt = f"""You are an expert lead qualification AI. Analyze the following raw Telegram message to determine if the author wants to BUY, HIRE, or PURCHASE a product or service.
 
 Raw Telegram Message:
 \"\"\"{text}\"\"\"
 
-Extract buyer intent strictly according to this schema:
-- buyer: true if the sender is genuinely looking to buy/hire/purchase; false if selling, offering, chatting, or spam.
-- need: exact product, account, service, or solution they need (or null if not a buyer).
-- budget: price or budget limit mentioned (or null).
-- quantity: number of units or volume needed (or null).
-- urgency: "HIGH", "MEDIUM", "LOW", or "NONE".
-- confidence: float between 0.0 and 1.0.
-- evidence: direct quote or words from the raw message proving buyer intent (or null).
+Classification Rules:
+- If the sender is SELLING, OFFERING, ADVERTISING (WTS/for sale), PROMOTING, or CASUALLY CHATTING, set buyer to false.
+- ONLY set buyer to true if the sender clearly indicates they WANT TO BUY (WTB), NEED TO HIRE, or ARE SEEKING to purchase a product or service.
 
-Respond ONLY with a valid JSON object strictly matching this schema (do NOT include markdown or verbose explanations):
-{{
-  "buyer": true,
-  "need": "item or service",
-  "budget": "budget string or null",
-  "quantity": "quantity string or null",
-  "urgency": "HIGH",
-  "confidence": 0.95,
-  "evidence": "exact quote from message"
-}}"""
+Respond ONLY with a valid JSON object matching this schema:
+If NOT a buyer:
+{{"buyer": false, "need": null, "budget": null, "quantity": null, "urgency": "NONE", "confidence": 0.0, "evidence": null}}
+
+If IS a buyer:
+{{"buyer": true, "need": "<exact item or service needed>", "budget": "<stated budget or null>", "quantity": "<stated quantity or null>", "urgency": "<HIGH|MEDIUM|LOW>", "confidence": 0.9, "evidence": "<direct quote showing buy intent>"}}"""
 
         last_error = "No active slots configured"
 
@@ -487,13 +478,30 @@ Respond ONLY with a valid JSON object strictly matching this schema (do NOT incl
                     if isinstance(raw_need, dict):
                         need = raw_need.get("specification") or raw_need.get("type") or str(raw_need)
                     else:
-                        need = raw_need
+                        need = str(raw_need).strip() if raw_need else ""
 
-                    budget = result.get("budget")
-                    quantity = result.get("quantity")
+                    raw_budget = result.get("budget")
+                    budget = str(raw_budget).strip() if raw_budget else ""
+                    raw_quantity = result.get("quantity")
+                    quantity = str(raw_quantity).strip() if raw_quantity else ""
                     urgency = result.get("urgency", "NONE")
                     confidence = float(result.get("confidence", 0.0))
-                    evidence = result.get("evidence")
+                    raw_evidence = result.get("evidence")
+                    evidence = str(raw_evidence).strip() if raw_evidence else ""
+
+                    # Filter out schema placeholder echoes
+                    if need.lower() in ["item or service", "none", "null", "item", "service", "<exact item or service needed>"]:
+                        need = ""
+                    if budget.lower() in ["budget string or null", "null", "none", "<stated budget or null>"]:
+                        budget = ""
+                    if quantity.lower() in ["quantity string or null", "null", "none", "<stated quantity or null>"]:
+                        quantity = ""
+                    if evidence.lower() in ["exact quote from message", "exact quote", "<direct quote showing buy intent>"]:
+                        evidence = ""
+
+                    # If buyer is marked True without valid need or evidence, demote to False
+                    if buyer and not need and not evidence:
+                        buyer = False
 
                     # Record stats
                     self.stats["success_calls"] += 1
