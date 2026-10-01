@@ -17,8 +17,14 @@ output/
 API Keys.txt
 *credential*
 *.env
+master_api_vault.json
+master_api_vault.env
+raw_messages.json
+buyers.json
+simulation_test_buyers.json
 config.py
 PowerShell.txt
 temp_repo/
 openRouterAPIKey.txt
 *APIKey*
+
