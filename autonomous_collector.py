@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Autonomous Telegram Buyer Collector & Persistent SQLite Scheduler
+Autonomous Telegram Buyer Collector & Persistent REST-Mediated Scheduler
 File: autonomous_collector.py
 
 Architectural Standards & Fault-Tolerant Exception Hierarchy:
-- Architecture-First: Docker / Host Supervisor -> Single Worker Lock -> SQLite WAL -> Persistent 110-Group State
+- Architecture-First: Docker / Host Supervisor -> Single Worker Lock -> Internal REST API -> SQLite WAL
+- Strict Container & Storage Isolation: Collector NEVER directly accesses SQLite database files.
+- All database state, raw messages, buyer leads, and scheduler state are mediated through telegram_database_api.
 - Server response handling:
-  ├── Success -> checkpoint DB + post-group pause
-  ├── FloodWait -> server wait (e.seconds) -> DB global pause -> sleep -> resume
+  ├── Success -> checkpoint API + post-group pause
+  ├── FloodWait -> server wait (e.seconds) -> API global pause -> sleep -> resume
   ├── Network error -> exponential retry (3 attempts) -> checkpoint as retryable -> advance
   ├── Auth/session error -> FATAL STOP + alert (no infinite spin on bad session)
-  └── Unknown error -> checkpoint DB error status + cooldown -> next eligible group
+  └── Unknown error -> checkpoint API error status + cooldown -> next eligible group
 - Cooldown -> Next eligible group -> FOREVER RESUME LOOP
 - Operational Pacing: All delays are operational pacing, NOT guarantees against server-side abuse detection.
 """
@@ -41,7 +43,7 @@ from telethon.errors import (
 )
 
 from config import API_ID, API_HASH, BASE_DIR
-import database
+from db_client import DatabaseApiClient, default_client
 from storage_handler import StorageHandler
 from llm_analyzer import LLMBuyerAnalyzer
 from lock_manager import SingleWorkerLock
@@ -70,7 +72,8 @@ class AutonomousBuyerCollector:
         max_request_delay: float = 4.5,
         min_group_cooldown: float = 20.0,
         max_group_cooldown: float = 120.0,
-        group_cycle_hours: float = 2.0
+        group_cycle_hours: float = 2.0,
+        db_client: Optional[DatabaseApiClient] = None
     ):
         self.messages_per_group = messages_per_group
         self.filter_marketplace = filter_marketplace
@@ -80,7 +83,8 @@ class AutonomousBuyerCollector:
         self.max_group_cooldown = max_group_cooldown
         self.group_cycle_seconds = int(group_cycle_hours * 3600)
 
-        database.init_db()
+        # Pure REST API Client - Zero direct SQLite access
+        self.db = db_client or default_client
         self.storage = StorageHandler()
         self.analyzer = LLMBuyerAnalyzer()
         self.client: Optional[TelegramClient] = None
@@ -108,7 +112,7 @@ class AutonomousBuyerCollector:
             print("🔌 Disconnected from Telegram.")
 
     def sync_target_groups_to_db(self) -> int:
-        """Sync groups from user_groups.json into persistent SQLite scrape_state table."""
+        """Sync groups from user_groups.json into persistent scrape_state table via REST API."""
         if not USER_GROUPS_FILE.exists():
             return 0
 
@@ -128,13 +132,13 @@ class AutonomousBuyerCollector:
                             filtered.append(g)
                     valid = filtered
 
-                return database.register_groups(valid)
+                return self.db.register_groups(valid)
         except Exception as e:
             print(f"⚠️ Warning syncing target groups: {e}")
             return 0
 
     async def process_single_message(self, msg, chat_id: int, title: str, username: str) -> Optional[Dict[str, Any]]:
-        """Store raw message in SQLite and classify via LLM fallback matrix."""
+        """Store raw message via REST API and classify via LLM fallback matrix."""
         if not msg or not msg.text or len(msg.text.strip()) < 5:
             return None
 
@@ -162,8 +166,8 @@ class AutonomousBuyerCollector:
             "message_link": link
         }
 
-        # 1. Raw Message Layer (SQLite + JSON)
-        database.insert_raw_message(raw_record)
+        # 1. Raw Message Layer (API-mediated SQLite + JSON)
+        self.db.insert_raw_message(raw_record)
         self.storage.save_raw_messages([raw_record])
 
         # 2. Semantic Analysis
@@ -188,7 +192,7 @@ class AutonomousBuyerCollector:
                 "message_link": link
             }
 
-            database.insert_buyer(buyer_record)
+            self.db.insert_buyer(buyer_record)
             self.storage.save_buyers([buyer_record])
             print(f"  🎯 [BUYER IDENTIFIED] {sender_name} ({sender_username}) in {title}")
             print(f"     Need: {buyer_record['need']} | Budget: {buyer_record['budget']} | Urgency: {buyer_record['urgency']}")
@@ -250,19 +254,19 @@ class AutonomousBuyerCollector:
             except FloodWaitError as e:
                 server_wait = getattr(e, "seconds", 60)
                 print(f"  🚨 [SERVER FLOODWAIT] Telegram mandates waiting {server_wait} seconds.")
-                database.set_global_flood_wait(server_wait + 10)
+                self.db.set_global_flood_wait(server_wait + 10, reason=f"Telegram FloodWait {server_wait}s")
                 print(f"  💤 Sleeping for exact server wait period: {server_wait + 5}s...")
                 await asyncio.sleep(server_wait + 5)
                 return new_buyers
 
             except (ChannelPrivateError, UserNotParticipantError):
                 print(f"  ⏭️ Skipped {title}: Channel private or account is not a participant.")
-                database.update_group_checkpoint(chat_id, max_seen_id, 86400, status="unauthorized", error="Not participant")
+                self.db.update_group_checkpoint(chat_id, max_seen_id, 86400, status="unauthorized", error="Not participant")
                 return new_buyers
 
             except ChatAdminRequiredError:
                 print(f"  ⏭️ Skipped {title}: Admin rights required to read.")
-                database.update_group_checkpoint(chat_id, max_seen_id, 86400, status="admin_required", error="Admin required")
+                self.db.update_group_checkpoint(chat_id, max_seen_id, 86400, status="admin_required", error="Admin required")
                 return new_buyers
 
             except (ConnectionError, asyncio.TimeoutError, RPCError) as net_err:
@@ -272,17 +276,17 @@ class AutonomousBuyerCollector:
                     await asyncio.sleep(backoff)
                 else:
                     print(f"  ❌ [NETWORK EXHAUSTED] {title} failed after {max_net_retries} attempts.")
-                    database.update_group_checkpoint(chat_id, max_seen_id, 1800, status="network_fail", error=str(net_err))
+                    self.db.report_group_error(chat_id, error=str(net_err), cooldown_seconds=1800, status="network_fail")
                     return new_buyers
 
             except Exception as e:
                 print(f"  ⚠️ [UNKNOWN ERROR] {title}: {type(e).__name__}: {e}")
-                database.update_group_checkpoint(chat_id, max_seen_id, 3600, status="error", error=str(e))
+                self.db.report_group_error(chat_id, error=str(e), cooldown_seconds=3600, status="error")
                 return new_buyers
 
         # Success checkpointing: post-group cooldown and scheduled next eligibility
         cycle_cooldown = self.group_cycle_seconds + random.randint(60, 600)
-        database.update_group_checkpoint(
+        self.db.update_group_checkpoint(
             chat_id=chat_id,
             last_message_id=max_seen_id,
             cooldown_seconds=cycle_cooldown,
@@ -301,10 +305,13 @@ class AutonomousBuyerCollector:
 
     async def run_worker_loop(self, max_cycles: Optional[int] = None) -> None:
         """
-        Continuous stateful scheduler loop.
+        Continuous stateful scheduler loop mediated through REST API.
         Never exits on non-fatal group errors; logs, checkpoints cooldown, and advances to next group.
         Only halts on FatalAuthError to alert operator.
         """
+        # Ensure database API is online and healthy before beginning
+        self.db.wait_for_health(timeout=30)
+
         if not await self.connect():
             return
 
@@ -312,7 +319,7 @@ class AutonomousBuyerCollector:
         cycles_completed = 0
 
         print("\n🚀 [STATEFUL SCHEDULER LOOP STARTED]")
-        print("💡 Architecture: Forever resume loop driven by persistent SQLite state machine.")
+        print("💡 Architecture: Forever resume loop driven by REST API SQLite state machine.")
 
         try:
             while True:
@@ -320,10 +327,10 @@ class AutonomousBuyerCollector:
                     print(f"Completed requested {max_cycles} cycles. Exiting.")
                     break
 
-                eligible_group = database.get_next_eligible_group()
+                eligible_group = self.db.get_next_eligible_group()
 
                 if not eligible_group:
-                    summary = database.get_schedule_summary()
+                    summary = self.db.get_schedule_summary()
                     next_due = summary.get("next_group_due_at")
                     print(f"💤 All groups currently cooling down. Next group eligible at: {next_due}")
                     print("Sleeping 60 seconds before re-checking scheduler queue...")
@@ -341,7 +348,7 @@ class AutonomousBuyerCollector:
 
                 except Exception as loop_err:
                     print(f"⚠️ [ISOLATED WORKER ERROR] Loop caught {type(loop_err).__name__}: {loop_err}")
-                    database.update_group_checkpoint(
+                    self.db.update_group_checkpoint(
                         chat_id=eligible_group["chat_id"],
                         last_message_id=eligible_group.get("last_message_id", 0),
                         cooldown_seconds=1800,
@@ -357,19 +364,17 @@ class AutonomousBuyerCollector:
 
     async def run_passive_listener(self) -> None:
         """Isolated Passive Push Listener: 0 polling queries, listens to server-pushed updates."""
+        self.db.wait_for_health(timeout=30)
+
         if not await self.connect():
             return
 
         self.sync_target_groups_to_db()
-        conn = database.get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT chat_id, chat_title, chat_username FROM scrape_state")
-        registered = cur.fetchall()
-        conn.close()
+        registered = self.db.get_all_groups()
 
         chat_ids = [r["chat_id"] for r in registered]
         title_map = {r["chat_id"]: r["chat_title"] for r in registered}
-        uname_map = {r["chat_id"]: r["chat_username"] or "" for r in registered}
+        uname_map = {r["chat_id"]: r.get("chat_username") or "" for r in registered}
 
         print(f"\n🎧 [PASSIVE PUSH LISTENER INITIALIZED] Listening to {len(chat_ids)} registered groups...")
         print("💡 Passive Architecture: 0 outbound polling requests. Real-time updates pushed by Telegram.")
@@ -383,15 +388,18 @@ class AutonomousBuyerCollector:
             if msg and msg.text:
                 await self.process_single_message(msg, chat_id, title, uname)
 
+        print("👂 Passive listener running. Press Ctrl+C to stop.")
         try:
             await self.client.run_until_disconnected()
+        except asyncio.CancelledError:
+            print("🛑 Passive listener received cancel signal.")
         finally:
             await self.disconnect()
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Autonomous Telegram Buyer Collector & Persistent SQLite Scheduler")
-    parser.add_argument("mode", choices=["worker", "listener", "status", "sync"], nargs="?", default="status",
+    parser = argparse.ArgumentParser(description="Autonomous Telegram Buyer Collector & REST Scheduler")
+    parser.add_argument("mode", choices=["worker", "listener", "status", "sync"], default="worker", nargs="?",
                         help="Operation mode: 'worker' (stateful scheduler), 'listener' (passive push), 'status' (DB summary), 'sync' (register groups)")
     parser.add_argument("--limit", type=int, default=15, help="Messages per group bounded batch (default: 15)")
     parser.add_argument("--cycles", type=int, default=None, help="Max group cycles to process (default: infinite)")
@@ -407,13 +415,13 @@ async def main():
     )
 
     if args.mode == "status":
-        database.init_db()
-        status = database.run_integrity_check()
-        counts = database.get_counts()
-        summary = database.get_schedule_summary()
+        collector.db.wait_for_health(timeout=10)
+        health = collector.db.get_health()
+        counts = collector.db.get_stats()
+        summary = collector.db.get_schedule_summary()
         print("\n📊 TELEGRAM BUYER COLLECTOR SYSTEM STATUS")
         print("=" * 60)
-        print(f"SQLite DB Integrity: {status}")
+        print(f"REST API Health: {health.get('status')} (WAL: {health.get('wal')})")
         print(f"Total Stored Messages: {counts.get('total_messages')}")
         print(f"Total Qualified Buyers: {counts.get('total_buyers')}")
         print(f"Registered Groups in Scheduler: {summary.get('total_registered_groups')}")
@@ -424,9 +432,9 @@ async def main():
         return
 
     if args.mode == "sync":
-        database.init_db()
+        collector.db.wait_for_health(timeout=10)
         n = collector.sync_target_groups_to_db()
-        print(f"Synchronized {n} groups into SQLite scrape_state.")
+        print(f"Synchronized {n} groups into REST API SQLite state.")
         return
 
     # For active worker or listener modes, enforce SingleWorkerLock

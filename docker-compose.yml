@@ -1,23 +1,59 @@
 version: '3.8'
 
+networks:
+  telegram_internal_net:
+    driver: bridge
+
 services:
+  database_api:
+    build:
+      context: .
+      dockerfile: Dockerfile.db_api
+    container_name: telegram_database_api
+    restart: unless-stopped
+    volumes:
+      # Persistent SQLite Database Directory (holds buyers.db, WAL, and SHM)
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATA_DIR=/app/data
+      - API_PORT=8000
+      - API_HOST=0.0.0.0
+      - INTERNAL_API_TOKEN=iroscript_tg_bot_token_secure_99
+    networks:
+      - telegram_internal_net
+    ports:
+      # Bound strictly to loopback interface on host (never public 0.0.0.0)
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
   telegram_collector:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: telegram_buyer_collector
     restart: unless-stopped
+    depends_on:
+      database_api:
+        condition: service_healthy
     volumes:
-      # Persistent SQLite Database & Session Mounts
-      - ./buyers.db:/app/buyers.db
-      - ./buyers.db-wal:/app/buyers.db-wal
-      - ./buyers.db-shm:/app/buyers.db-shm
+      # Telethon session, credentials, target groups, and OS kernel lock file
+      # Note: SQLite database files are strictly isolated to database_api service
       - ./tg_buyer_session.session:/app/tg_buyer_session.session
       - ./.env:/app/.env:ro
       - ./user_groups.json:/app/user_groups.json:ro
       - ./.collector.lock:/app/.collector.lock
     environment:
       - PYTHONUNBUFFERED=1
+      - DATABASE_API_URL=http://telegram_database_api:8000
+      - INTERNAL_API_TOKEN=iroscript_tg_bot_token_secure_99
+    networks:
+      - telegram_internal_net
     command: ["worker", "--limit", "15"]
     deploy:
       replicas: 1

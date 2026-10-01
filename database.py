@@ -12,10 +12,19 @@ Architecture Standards:
 import sqlite3
 import json
 from pathlib import Path
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
-DB_FILE = Path(__file__).parent.resolve() / "buyers.db"
+DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent.resolve() / "data"))
+if os.getenv("DB_FILE"):
+    DB_FILE = Path(os.getenv("DB_FILE"))
+elif (DATA_DIR / "buyers.db").exists():
+    DB_FILE = DATA_DIR / "buyers.db"
+elif (Path(__file__).parent.resolve() / "buyers.db").exists():
+    DB_FILE = Path(__file__).parent.resolve() / "buyers.db"
+else:
+    DB_FILE = DATA_DIR / "buyers.db"
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -358,6 +367,43 @@ def run_integrity_check(db_path: Optional[Path] = None) -> str:
         return cur.fetchone()[0]
     finally:
         conn.close()
+
+
+def get_group_state(chat_id: int, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Retrieve current state record for a single group."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT chat_id, chat_title, chat_username, last_message_id,
+                   last_scraped_at, next_eligible_at, status, error_count, last_error, priority
+            FROM scrape_state
+            WHERE chat_id = ?
+        """, (chat_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_messages_by_chat_id(chat_id: int, limit: int = 20, db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Retrieve raw messages for a specific chat."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, message_id, chat_id, chat_title, sender_id,
+                   sender_name, sender_username, date, raw_text, message_link, created_at
+            FROM messages
+            WHERE chat_id = ?
+            ORDER BY message_id DESC
+            LIMIT ?
+        """, (chat_id, limit))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,34 @@
+# Telegram Database REST API - Dockerfile
+# Base Image: Python 3.13 Slim Debian
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Install system dependencies for SQLite
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3 \
+    libsqlite3-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt aiohttp requests
+
+# Copy application source code
+COPY . .
+
+# Persistent storage mount for SQLite WAL database directory
+VOLUME ["/app/data"]
+
+EXPOSE 8000
+
+ENV PYTHONUNBUFFERED=1
+ENV DATA_DIR=/app/data
+ENV API_PORT=8000
+ENV API_HOST=0.0.0.0
+
+HEALTHCHECK --interval=5s --timeout=3s --retries=5 --start-period=3s \
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" || exit 1
+
+ENTRYPOINT ["python3", "db_server.py"]
