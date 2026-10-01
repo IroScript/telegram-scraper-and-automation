@@ -39,6 +39,8 @@ services:
     depends_on:
       database_api:
         condition: service_healthy
+    env_file:
+      - .env
     volumes:
       # Telethon session, credentials, target groups, and OS kernel lock file
       # Note: SQLite database files are strictly isolated to database_api service
@@ -50,7 +52,7 @@ services:
       - PYTHONUNBUFFERED=1
       - DATABASE_API_URL=http://telegram_database_api:8000
       - INTERNAL_API_TOKEN=iroscript_tg_bot_token_secure_99
-      - TEST_MOCK_SCANNER=1
+      - TEST_MOCK_SCANNER=0
       - SCHEDULER_MAX_SLICE=5.0
     networks:
       - telegram_internal_net
