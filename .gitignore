@@ -30,3 +30,4 @@ openRouterAPIKey.txt
 *.db
 *.db-journal
 latest_buyer_report.json
+rotation_state.json
