@@ -1,26 +1,36 @@
 """
-SQLite Database Layer for Telegram Messages and Buyer Leads
+SQLite Database Layer for Telegram Messages and Buyer Leads (WAL Mode & Persistent State Engine)
 File: database.py
+
+Architecture Standards:
+- WAL (Write-Ahead Logging) Journal Mode for non-blocking read/write concurrency
+- Strict UNIQUE(chat_id, message_id) constraints for duplicate prevention
+- Persistent stateful group scheduling in SQLite (replaces JSON state files)
+- Full crash resilience: recovers checkpoints directly from SQLite upon restart
 """
 
 import sqlite3
 import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_FILE = Path(__file__).parent.resolve() / "buyers.db"
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    """Connect to SQLite database with WAL mode and busy timeout."""
     target_path = Path(db_path or DB_FILE)
-    conn = sqlite3.connect(str(target_path))
+    conn = sqlite3.connect(str(target_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
 def init_db(db_path: Optional[Path] = None) -> None:
-    """Initialize SQLite tables for messages, buyers, and scraping checkpoints."""
+    """Initialize SQLite tables and migrate columns if needed."""
     conn = get_connection(db_path)
     cur = conn.cursor()
 
@@ -67,20 +77,44 @@ def init_db(db_path: Optional[Path] = None) -> None:
         )
     """)
 
-    # 3. Channel Scrape Checkpoint Table (for incremental fetching)
+    # 3. Persistent Group State & Scheduler Table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS scrape_state (
             chat_id INTEGER PRIMARY KEY,
             chat_title TEXT,
+            chat_username TEXT,
             last_message_id INTEGER DEFAULT 0,
-            last_scraped_at TIMESTAMP
+            last_scraped_at TIMESTAMP,
+            next_eligible_at TIMESTAMP,
+            status TEXT DEFAULT 'idle',
+            error_count INTEGER DEFAULT 0,
+            last_error TEXT,
+            priority INTEGER DEFAULT 1
         )
     """)
 
-    # Indices for high-speed queries
+    # Check for column migrations on scrape_state
+    cur.execute("PRAGMA table_info(scrape_state)")
+    existing_cols = {r["name"] for r in cur.fetchall()}
+
+    columns_to_add = [
+        ("chat_username", "TEXT"),
+        ("next_eligible_at", "TIMESTAMP"),
+        ("status", "TEXT DEFAULT 'idle'"),
+        ("error_count", "INTEGER DEFAULT 0"),
+        ("last_error", "TEXT"),
+        ("priority", "INTEGER DEFAULT 1"),
+    ]
+
+    for col_name, col_type in columns_to_add:
+        if col_name not in existing_cols:
+            cur.execute(f"ALTER TABLE scrape_state ADD COLUMN {col_name} {col_type}")
+
+    # High-performance indices
     cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_msg ON messages(chat_id, message_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_buyers_urgency ON buyers(urgency)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_buyers_created ON buyers(created_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_scrape_eligible ON scrape_state(next_eligible_at, priority)")
 
     conn.commit()
     conn.close()
@@ -108,8 +142,7 @@ def insert_raw_message(msg: Dict[str, Any], db_path: Optional[Path] = None) -> b
             msg.get("message_link")
         ))
         conn.commit()
-        inserted = cur.rowcount > 0
-        return inserted
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -156,32 +189,122 @@ def insert_buyer(buyer: Dict[str, Any], db_path: Optional[Path] = None) -> bool:
         conn.close()
 
 
-def get_last_scraped_id(chat_id: int, db_path: Optional[Path] = None) -> int:
-    """Retrieve the last scraped message ID for a given chat."""
+def register_groups(groups: List[Dict[str, Any]], db_path: Optional[Path] = None) -> int:
+    """Register target groups into persistent scrape_state table if not already present."""
     conn = get_connection(db_path)
     cur = conn.cursor()
+    registered = 0
     try:
-        cur.execute("SELECT last_message_id FROM scrape_state WHERE chat_id = ?", (chat_id,))
-        row = cur.fetchone()
-        return row["last_message_id"] if row else 0
+        for g in groups:
+            chat_id = g.get("id")
+            if not chat_id:
+                continue
+            title = g.get("title", f"Chat_{chat_id}")
+            uname = g.get("username")
+            cur.execute("""
+                INSERT INTO scrape_state (chat_id, chat_title, chat_username, last_message_id, next_eligible_at, status)
+                VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP, 'idle')
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    chat_title = excluded.chat_title,
+                    chat_username = excluded.chat_username
+            """, (chat_id, title, uname))
+            registered += 1
+        conn.commit()
+        return registered
     finally:
         conn.close()
 
 
-def update_scrape_state(chat_id: int, chat_title: str, last_message_id: int, db_path: Optional[Path] = None) -> None:
-    """Update checkpoint for a chat to avoid duplicate reads."""
+def get_next_eligible_group(db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Retrieve the next eligible group whose cooldown has expired."""
     conn = get_connection(db_path)
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO scrape_state (chat_id, chat_title, last_message_id, last_scraped_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                chat_title = excluded.chat_title,
-                last_message_id = MAX(scrape_state.last_message_id, excluded.last_message_id),
-                last_scraped_at = excluded.last_scraped_at
-        """, (chat_id, chat_title, last_message_id, datetime.now().isoformat()))
+            SELECT chat_id, chat_title, chat_username, last_message_id,
+                   last_scraped_at, next_eligible_at, status, error_count
+            FROM scrape_state
+            WHERE next_eligible_at IS NULL
+               OR datetime('now') >= datetime(next_eligible_at)
+            ORDER BY
+                priority DESC,
+                last_scraped_at ASC NULLS FIRST
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_group_checkpoint(
+    chat_id: int,
+    last_message_id: int,
+    cooldown_seconds: float,
+    status: str = "idle",
+    error: Optional[str] = None,
+    db_path: Optional[Path] = None
+) -> None:
+    """Update checkpoint and schedule next eligibility time in SQLite."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE scrape_state
+            SET last_message_id = MAX(last_message_id, ?),
+                last_scraped_at = CURRENT_TIMESTAMP,
+                next_eligible_at = datetime('now', ?),
+                status = ?,
+                error_count = CASE WHEN ? IS NOT NULL THEN error_count + 1 ELSE 0 END,
+                last_error = ?
+            WHERE chat_id = ?
+        """, (
+            last_message_id,
+            f"+{int(cooldown_seconds)} seconds",
+            status,
+            error,
+            error,
+            chat_id
+        ))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def set_global_flood_wait(seconds: int, db_path: Optional[Path] = None) -> None:
+    """Push next_eligible_at forward for all groups upon server-dictated FloodWait."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE scrape_state
+            SET next_eligible_at = datetime('now', ?),
+                status = 'flood_wait'
+        """, (f"+{int(seconds)} seconds",))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_schedule_summary(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Get snapshot of current scheduling states across all registered groups."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) FROM scrape_state")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM scrape_state WHERE next_eligible_at IS NULL OR datetime('now') >= datetime(next_eligible_at)")
+        eligible = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM scrape_state WHERE datetime('now') < datetime(next_eligible_at)")
+        cooling = cur.fetchone()[0]
+        cur.execute("SELECT MIN(next_eligible_at) FROM scrape_state WHERE datetime('now') < datetime(next_eligible_at)")
+        next_due = cur.fetchone()[0]
+        return {
+            "total_registered_groups": total,
+            "eligible_now": eligible,
+            "in_cooldown": cooling,
+            "next_group_due_at": next_due
+        }
     finally:
         conn.close()
 
@@ -226,47 +349,19 @@ def get_counts(db_path: Optional[Path] = None) -> Dict[str, int]:
         conn.close()
 
 
-def migrate_json_to_sqlite(base_dir: Optional[Path] = None) -> Dict[str, int]:
-    """Migrate existing raw_messages.json and buyers.json into buyers.db."""
-    dir_path = Path(base_dir or DB_FILE.parent)
-    init_db(dir_path / "buyers.db")
-
-    raw_file = dir_path / "raw_messages.json"
-    buyers_file = dir_path / "buyers.json"
-
-    raw_migrated = 0
-    buyers_migrated = 0
-
-    if raw_file.exists():
-        try:
-            with open(raw_file, "r", encoding="utf-8") as f:
-                raw_list = json.load(f)
-                if isinstance(raw_list, list):
-                    for msg in raw_list:
-                        if insert_raw_message(msg, dir_path / "buyers.db"):
-                            raw_migrated += 1
-        except Exception:
-            pass
-
-    if buyers_file.exists():
-        try:
-            with open(buyers_file, "r", encoding="utf-8") as f:
-                buyers_list = json.load(f)
-                if isinstance(buyers_list, list):
-                    for b in buyers_list:
-                        if insert_buyer(b, dir_path / "buyers.db"):
-                            buyers_migrated += 1
-        except Exception:
-            pass
-
-    return {
-        "raw_migrated": raw_migrated,
-        "buyers_migrated": buyers_migrated
-    }
+def run_integrity_check(db_path: Optional[Path] = None) -> str:
+    """Execute SQLite integrity check."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute("PRAGMA integrity_check")
+        return cur.fetchone()[0]
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
     init_db()
-    res = migrate_json_to_sqlite()
+    status = run_integrity_check()
     counts = get_counts()
-    print(f"Database initialized. Migrated: {res}. Total DB State: {counts}")
+    print(f"Database initialized. Integrity: {status}. Total DB State: {counts}")
