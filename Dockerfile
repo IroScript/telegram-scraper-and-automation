@@ -14,8 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt aiohttp requests
 
-# Copy application source code
-COPY . .
+# Explicitly copy ONLY collector modules
+# Excludes database.py, db_server.py, and all database files to ensure absolute isolation
+COPY config.py .
+COPY db_client.py .
+COPY llm_analyzer.py .
+COPY lock_manager.py .
+COPY storage_handler.py .
+COPY autonomous_collector.py .
+COPY test_*.py .
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

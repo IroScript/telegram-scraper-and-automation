@@ -1,0 +1,15 @@
+# Ignore database storage files from build context
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Ignore caches and version control
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.collector.lock*
+*.session
+*.session-journal

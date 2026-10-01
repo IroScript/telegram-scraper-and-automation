@@ -56,14 +56,6 @@ class StorageHandler:
         with open(self.raw_path, "w", encoding="utf-8") as f:
             json.dump(all_raw, f, ensure_ascii=False, indent=2)
 
-        # Also persist to SQLite database
-        try:
-            import database
-            for rm in raw_messages:
-                database.insert_raw_message(rm)
-        except Exception:
-            pass
-
         return len(all_raw)
 
     def load_existing_buyers(self) -> List[Dict[str, Any]]:
@@ -127,13 +119,5 @@ class StorageHandler:
             writer.writeheader()
             for r in all_records:
                 writer.writerow(r)
-
-        # Also persist buyers to SQLite database
-        try:
-            import database
-            for b in buyers:
-                database.insert_buyer(b)
-        except Exception:
-            pass
 
         return len(all_records)
