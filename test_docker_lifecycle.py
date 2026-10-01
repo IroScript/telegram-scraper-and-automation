@@ -49,7 +49,7 @@ def run_docker_lifecycle():
         assert healthy == True, "database_api must report healthy status"
 
         # Verify host probe
-        client = DatabaseApiClient(base_url="http://127.0.0.1:8000", api_token="iroscript_tg_bot_token_secure_99")
+        client = DatabaseApiClient(base_url="http://127.0.0.1:8008", api_token="iroscript_tg_bot_token_secure_99")
         health = client.get_health()
         print("Host probe health response:", health)
         assert health["status"] == "healthy"

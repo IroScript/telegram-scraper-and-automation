@@ -1,5 +1,3 @@
-version: '3.8'
-
 networks:
   telegram_internal_net:
     driver: bridge
@@ -23,8 +21,8 @@ services:
     networks:
       - telegram_internal_net
     ports:
-      # Bound strictly to loopback interface on host (never public 0.0.0.0)
-      - "127.0.0.1:8000:8000"
+      # Bound strictly to loopback interface on host avoiding port 8000 collision
+      - "127.0.0.1:8008:8000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
       interval: 5s
