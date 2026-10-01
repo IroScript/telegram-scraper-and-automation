@@ -495,7 +495,18 @@ class AutonomousBuyerCollector:
                                 break
 
                             now = datetime.now(timezone.utc)
-                            remaining_seconds = (due_dt - now).total_seconds()
+                            # Re-check database state after each slice for dynamic eligibility or schedule updates
+                            try:
+                                if self.db.get_next_eligible_group():
+                                    break
+                                summary = self.db.get_schedule_summary()
+                                next_due = summary.get("next_group_due_at")
+                                due_dt = parse_db_utc_time(next_due)
+                                if not due_dt:
+                                    break
+                                remaining_seconds = (due_dt - now).total_seconds()
+                            except Exception:
+                                remaining_seconds = (due_dt - now).total_seconds()
 
                         if not self.shutdown_event.is_set():
                             print(f"[SCHEDULER] Wake-up triggered.")
