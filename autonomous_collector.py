@@ -22,11 +22,25 @@ import os
 import json
 import time
 import random
+import signal
 import argparse
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+def parse_db_utc_time(ts_str: Optional[str]) -> Optional[datetime]:
+    """Parse SQLite UTC timestamp string into timezone-aware datetime."""
+    if not ts_str:
+        return None
+    try:
+        clean_ts = ts_str.replace("T", " ")
+        if "." in clean_ts:
+            clean_ts = clean_ts.split(".")[0]
+        dt = datetime.strptime(clean_ts, "%Y-%m-%d %H:%M:%S")
+        return dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
 
 from telethon import TelegramClient, events
 from telethon.errors import (
@@ -73,7 +87,10 @@ class AutonomousBuyerCollector:
         min_group_cooldown: float = 20.0,
         max_group_cooldown: float = 120.0,
         group_cycle_hours: float = 2.0,
-        db_client: Optional[DatabaseApiClient] = None
+        db_client: Optional[DatabaseApiClient] = None,
+        mock_mode: bool = False,
+        mock_cooldown: Optional[float] = None,
+        max_sleep_slice: float = 30.0
     ):
         self.messages_per_group = messages_per_group
         self.filter_marketplace = filter_marketplace
@@ -82,6 +99,10 @@ class AutonomousBuyerCollector:
         self.min_group_cooldown = min_group_cooldown
         self.max_group_cooldown = max_group_cooldown
         self.group_cycle_seconds = int(group_cycle_hours * 3600)
+        self.mock_mode = mock_mode or (os.getenv("TEST_MOCK_SCANNER", "0") == "1")
+        self.mock_cooldown = mock_cooldown
+        self.max_sleep_slice = float(os.getenv("SCHEDULER_MAX_SLICE", str(max_sleep_slice)))
+        self.shutdown_event = asyncio.Event()
 
         # Pure REST API Client - Zero direct SQLite access
         self.db = db_client or default_client
@@ -89,8 +110,20 @@ class AutonomousBuyerCollector:
         self.analyzer = LLMBuyerAnalyzer()
         self.client: Optional[TelegramClient] = None
 
+    def handle_shutdown_signal(self, sig: int):
+        """Handle OS termination signals gracefully without abrupt termination or lock leaks."""
+        sig_name = signal.Signals(sig).name if hasattr(signal, "Signals") else str(sig)
+        print(f"\n🛑 [SCHEDULER] Received termination signal ({sig_name}). Graceful shutdown initiated.")
+        sys.stdout.flush()
+        self.shutdown_event.set()
+
     async def connect(self) -> bool:
         """Connect and verify Telegram user session."""
+        if self.mock_mode:
+            print("📡 [MOCK MODE] Mock Telegram connection active (0 live network queries).")
+            sys.stdout.flush()
+            return True
+
         if not API_ID or not API_HASH:
             print("❌ Error: API_ID or API_HASH missing in configuration.")
             return False
@@ -107,6 +140,11 @@ class AutonomousBuyerCollector:
 
     async def disconnect(self) -> None:
         """Disconnect Telegram client cleanly."""
+        if self.mock_mode:
+            print("🔌 [MOCK MODE] Disconnected mock Telegram connection.")
+            sys.stdout.flush()
+            return
+
         if self.client and self.client.is_connected():
             await self.client.disconnect()
             print("🔌 Disconnected from Telegram.")
@@ -200,6 +238,84 @@ class AutonomousBuyerCollector:
 
         return None
 
+    async def _mock_scan_single_group(self, group: Dict[str, Any]) -> List[Dict[str, Any]]:
+        chat_id = group["chat_id"]
+        title = group["chat_title"]
+        username = group.get("chat_username")
+        last_scraped_id = group.get("last_message_id", 0)
+
+        print(f"\n📂 [MOCK SCAN] Processing Group: [{title}] (ID: {chat_id}, Last Checkpoint ID: {last_scraped_id})")
+        sys.stdout.flush()
+
+        # Injected error testing
+        inject = os.getenv("INJECT_ERROR", "")
+        if inject == "timeout":
+            os.environ.pop("INJECT_ERROR", None)
+            raise asyncio.TimeoutError("Simulated network timeout")
+        elif inject == "network":
+            os.environ.pop("INJECT_ERROR", None)
+            raise ConnectionError("Simulated network connection reset")
+        elif inject == "auth":
+            os.environ.pop("INJECT_ERROR", None)
+            raise FatalAuthError("Simulated Telegram session revocation")
+        elif inject == "unknown":
+            os.environ.pop("INJECT_ERROR", None)
+            raise RuntimeError("Simulated unexpected exception in group scanner")
+
+        # Generate 5 mock messages
+        new_buyers = []
+        max_seen_id = last_scraped_id
+        for i in range(1, 6):
+            mid = last_scraped_id + i
+            max_seen_id = mid
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            raw_record = {
+                "message_id": mid,
+                "chat_id": chat_id,
+                "chat_title": title,
+                "date": date_str,
+                "sender_id": 999888 + (mid % 10),
+                "sender_name": f"Mock Sender {mid}",
+                "sender_username": f"@mock_user_{mid}",
+                "raw_text": f"Looking to buy bulk accounts order {mid}",
+                "message_link": f"https://t.me/c/{abs(chat_id)}/{mid}"
+            }
+            self.db.insert_raw_message(raw_record)
+            if mid % 2 == 0:
+                buyer_record = {
+                    "message_id": mid,
+                    "chat_id": chat_id,
+                    "chat_title": title,
+                    "date": date_str,
+                    "sender_id": raw_record["sender_id"],
+                    "sender_name": raw_record["sender_name"],
+                    "sender_username": raw_record["sender_username"],
+                    "buyer": True,
+                    "need": "bulk accounts",
+                    "budget": "$100",
+                    "quantity": "50",
+                    "urgency": "HIGH",
+                    "confidence": 0.95,
+                    "evidence": raw_record["raw_text"],
+                    "raw_text": raw_record["raw_text"],
+                    "message_link": raw_record["message_link"]
+                }
+                self.db.insert_buyer(buyer_record)
+                new_buyers.append(buyer_record)
+
+        cycle_cooldown = self.mock_cooldown if self.mock_cooldown is not None else self.group_cycle_seconds
+        self.db.update_group_checkpoint(
+            chat_id=chat_id,
+            last_message_id=max_seen_id,
+            cooldown_seconds=cycle_cooldown,
+            status="idle",
+            error=None
+        )
+        print(f"  ✓ [MOCK] Generated 5 messages (last_id={max_seen_id}), buyers={len(new_buyers)}")
+        print(f"  ⏳ Group scheduled next check in ~{cycle_cooldown} seconds.")
+        sys.stdout.flush()
+        return new_buyers
+
     async def scan_single_group(self, group: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Scan one eligible group adhering strictly to the fault-tolerant exception hierarchy:
@@ -208,6 +324,9 @@ class AutonomousBuyerCollector:
         - Auth/session error -> FATAL STOP + alert
         - Unknown error -> checkpoint DB error status + cooldown -> next group
         """
+        if self.mock_mode:
+            return await self._mock_scan_single_group(group)
+
         chat_id = group["chat_id"]
         title = group["chat_title"]
         username = group.get("chat_username")
@@ -305,9 +424,16 @@ class AutonomousBuyerCollector:
 
     async def run_worker_loop(self, max_cycles: Optional[int] = None) -> None:
         """
-        Continuous stateful scheduler loop mediated through REST API.
-        Never exits on non-fatal group errors; logs, checkpoints cooldown, and advances to next group.
-        Only halts on FatalAuthError to alert operator.
+        Permanent Non-Terminating Stateful Scheduler Loop mediated through REST API.
+
+        System Loop Architecture:
+        START -> LOAD STATE -> SELECT NEXT ELIGIBLE GROUP -> 
+        (IF DUE: PROCESS WORK -> SAVE CHECKPOINT -> SCHEDULE NEXT ELIGIBLE TIME) -> 
+        RETURN TO SCHEDULER -> WAIT (bounded sleep slices) -> REPEAT FOREVER
+
+        Absolute Loop Rule:
+        - NEVER exits on empty scheduler, all groups cooling down, 0 messages, 0 buyers, or transient errors.
+        - Only exits on explicit SIGTERM/SIGINT shutdown or FatalAuthError.
         """
         # Ensure database API is online and healthy before beginning
         self.db.wait_for_health(timeout=30)
@@ -320,47 +446,120 @@ class AutonomousBuyerCollector:
 
         print("\n🚀 [STATEFUL SCHEDULER LOOP STARTED]")
         print("💡 Architecture: Forever resume loop driven by REST API SQLite state machine.")
+        sys.stdout.flush()
 
         try:
-            while True:
+            while not self.shutdown_event.is_set():
                 if max_cycles and cycles_completed >= max_cycles:
                     print(f"Completed requested {max_cycles} cycles. Exiting.")
+                    sys.stdout.flush()
                     break
 
-                eligible_group = self.db.get_next_eligible_group()
+                try:
+                    eligible_group = self.db.get_next_eligible_group()
+                except Exception as api_err:
+                    print(f"⚠️ [SCHEDULER API ERROR] Error querying next eligible group: {api_err}")
+                    print(f"[SCHEDULER] Scheduler remains alive.")
+                    print(f"RETURNING_TO_SCHEDULER=true")
+                    sys.stdout.flush()
+                    await asyncio.sleep(min(self.max_sleep_slice, 5.0))
+                    continue
 
                 if not eligible_group:
-                    summary = self.db.get_schedule_summary()
+                    try:
+                        summary = self.db.get_schedule_summary()
+                    except Exception as sum_err:
+                        print(f"⚠️ [SCHEDULER SUMMARY ERROR] Error querying summary: {sum_err}")
+                        summary = {}
+
                     next_due = summary.get("next_group_due_at")
-                    print(f"💤 All groups currently cooling down. Next group eligible at: {next_due}")
-                    print("Sleeping 60 seconds before re-checking scheduler queue...")
-                    await asyncio.sleep(60)
+                    due_dt = parse_db_utc_time(next_due)
+                    now = datetime.now(timezone.utc)
+
+                    if due_dt and (due_dt - now).total_seconds() > 0:
+                        remaining_seconds = (due_dt - now).total_seconds()
+                        while remaining_seconds > 0 and not self.shutdown_event.is_set():
+                            slice_wait = min(remaining_seconds, self.max_sleep_slice)
+                            print(f"[SCHEDULER] No eligible group.")
+                            print(f"[SCHEDULER] Next eligible: {next_due}")
+                            print(f"[SCHEDULER] Waiting: {remaining_seconds:.1f}s")
+                            print(f"SCHEDULER_STATE=RUNNING")
+                            print(f"NEXT_ELIGIBLE_AT={next_due}")
+                            print(f"WAIT_SECONDS={remaining_seconds:.1f}")
+                            print(f"WAITING_FOR_WORK=true")
+                            print(f"[SCHEDULER] Scheduler remains alive.")
+                            sys.stdout.flush()
+
+                            await asyncio.sleep(slice_wait)
+                            if self.shutdown_event.is_set():
+                                break
+
+                            now = datetime.now(timezone.utc)
+                            remaining_seconds = (due_dt - now).total_seconds()
+
+                        if not self.shutdown_event.is_set():
+                            print(f"[SCHEDULER] Wake-up triggered.")
+                            print(f"[SCHEDULER] Rechecking eligible groups.")
+                            sys.stdout.flush()
+                    else:
+                        slice_wait = min(self.max_sleep_slice, 5.0)
+                        print(f"[SCHEDULER] No eligible group.")
+                        print(f"[SCHEDULER] Next eligible: {next_due}")
+                        print(f"[SCHEDULER] Waiting: {slice_wait:.1f}s")
+                        print(f"SCHEDULER_STATE=RUNNING")
+                        print(f"NEXT_ELIGIBLE_AT={next_due}")
+                        print(f"WAIT_SECONDS={slice_wait:.1f}")
+                        print(f"WAITING_FOR_WORK=true")
+                        print(f"[SCHEDULER] Scheduler remains alive.")
+                        sys.stdout.flush()
+
+                        await asyncio.sleep(slice_wait)
+                        if not self.shutdown_event.is_set():
+                            print(f"[SCHEDULER] Wake-up triggered.")
+                            print(f"[SCHEDULER] Rechecking eligible groups.")
+                            sys.stdout.flush()
+
                     continue
+
+                # Process eligible group
+                chat_id = eligible_group["chat_id"]
+                title = eligible_group.get("chat_title") or f"Group_{chat_id}"
+                print(f"[SCHEDULER] Group selected: [{title}] (ID: {chat_id})")
+                print(f"WORK_STARTED={chat_id}")
+                sys.stdout.flush()
 
                 try:
                     await self.scan_single_group(eligible_group)
-                    cycles_completed += 1
-
                 except FatalAuthError as fatal:
                     print(f"\n🛑 [FATAL AUTH STOP] {fatal}")
                     print("Halting collector worker loop immediately to protect session. Operator intervention required.")
+                    sys.stdout.flush()
                     break
-
                 except Exception as loop_err:
                     print(f"⚠️ [ISOLATED WORKER ERROR] Loop caught {type(loop_err).__name__}: {loop_err}")
-                    self.db.update_group_checkpoint(
-                        chat_id=eligible_group["chat_id"],
-                        last_message_id=eligible_group.get("last_message_id", 0),
-                        cooldown_seconds=1800,
-                        status="error_isolated",
-                        error=str(loop_err)
-                    )
-                    cycles_completed += 1
+                    try:
+                        self.db.report_group_error(
+                            chat_id=chat_id,
+                            error=str(loop_err),
+                            cooldown_seconds=1800,
+                            status="error_isolated"
+                        )
+                    except Exception as db_err:
+                        print(f"⚠️ Failed to report error to DB API: {db_err}")
+                finally:
+                    print(f"WORK_COMPLETED={chat_id}")
+                    print(f"RETURNING_TO_SCHEDULER=true")
+                    sys.stdout.flush()
+
+                cycles_completed += 1
 
         except asyncio.CancelledError:
-            print("🛑 Collector worker received cancellation signal. Cleaning up.")
+            print("🛑 [SCHEDULER] Collector worker received cancellation signal. Cleaning up.")
+            sys.stdout.flush()
         finally:
             await self.disconnect()
+            print("🛑 [SCHEDULER] Worker loop stopped cleanly.")
+            sys.stdout.flush()
 
     async def run_passive_listener(self) -> None:
         """Isolated Passive Push Listener: 0 polling queries, listens to server-pushed updates."""
@@ -404,6 +603,9 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=15, help="Messages per group bounded batch (default: 15)")
     parser.add_argument("--cycles", type=int, default=None, help="Max group cycles to process (default: infinite)")
     parser.add_argument("--all-groups", action="store_true", help="Include all groups without marketplace keyword filter")
+    parser.add_argument("--mock", action="store_true", help="Run in mock mode (for architecture validation without live Telegram)")
+    parser.add_argument("--mock-cooldown", type=float, default=None, help="Override group cooldown in seconds for mock mode")
+    parser.add_argument("--max-slice", type=float, default=30.0, help="Maximum sleep slice in seconds (default: 30.0)")
     return parser.parse_args()
 
 
@@ -411,7 +613,10 @@ async def main():
     args = parse_args()
     collector = AutonomousBuyerCollector(
         messages_per_group=args.limit,
-        filter_marketplace=not args.all_groups
+        filter_marketplace=not args.all_groups,
+        mock_mode=args.mock,
+        mock_cooldown=args.mock_cooldown,
+        max_sleep_slice=args.max_slice
     )
 
     if args.mode == "status":
@@ -436,6 +641,14 @@ async def main():
         n = collector.sync_target_groups_to_db()
         print(f"Synchronized {n} groups into REST API SQLite state.")
         return
+
+    # Attach signal handlers for graceful termination
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: collector.handle_shutdown_signal(s))
+        except (NotImplementedError, AttributeError):
+            signal.signal(sig, lambda s, f: collector.handle_shutdown_signal(s))
 
     # For active worker or listener modes, enforce SingleWorkerLock
     with SingleWorkerLock() as _:
