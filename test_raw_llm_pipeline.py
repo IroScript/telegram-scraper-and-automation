@@ -9,7 +9,7 @@ from pathlib import Path
 from llm_analyzer import LLMBuyerAnalyzer
 from storage_handler import StorageHandler
 
-TEST_DIR = Path("/home/mdkamruzzamanirak_gmail_com/telegram-bot")
+TEST_DIR = Path(__file__).parent.resolve()
 TEST_RAW_JSON = TEST_DIR / "simulation_raw_messages.json"
 TEST_BUYERS_JSON = TEST_DIR / "simulation_buyers.json"
 TEST_BUYERS_CSV = TEST_DIR / "simulation_buyers.csv"

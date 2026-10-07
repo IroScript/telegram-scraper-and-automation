@@ -30,6 +30,7 @@ else:
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Connect to SQLite database with WAL mode and busy timeout."""
     target_path = Path(db_path or DB_FILE)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(target_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")

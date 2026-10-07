@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from llm_analyzer import LLMBuyerAnalyzer, FALLBACK_SLOTS
 
-BASE_DIR = Path("/home/mdkamruzzamanirak_gmail_com/telegram-bot")
+BASE_DIR = Path(__file__).parent.resolve()
 
 
 def test_fallback_slots_integrity():

@@ -134,7 +134,7 @@ class ScraperConfig:
         "minimum order", "moq", "bulk", "wholesale", "retail",
         "offer", "deal", "discount", "promotion"
     ]
-    BUYER_KEYWORDS: List[str] = [
+    INTENT_KEYWORDS: List[str] = [
         "buy", "buying", "wtb", "looking for", "need", "want",
         "seeking", "searching", "interested", "inquiry", "quote",
         "pricing", "cost", "budget", "requirement", "specification"
@@ -347,8 +347,8 @@ class TelegramScraper:
         print(f"\n{'='*60}")
         print(f"Starting scrape: {channel}")
         print(f"Mode: {scrape_mode.upper()}")
-        if scrape_mode == 'keyword' and self.config.BUYER_KEYWORDS:
-            print(f"Searching for keywords: {self.config.BUYER_KEYWORDS}")
+        if scrape_mode == 'keyword' and getattr(self.config, 'INTENT_KEYWORDS', None):
+            print(f"Searching for keywords: {self.config.INTENT_KEYWORDS}")
         print(f"{'='*60}")
 
         channel_processed = 0
@@ -392,10 +392,10 @@ class TelegramScraper:
 
                 # Filter by keyword if in keyword mode and keywords are provided
                 matched_kw = "matched"
-                if scrape_mode == 'keyword' and self.config.BUYER_KEYWORDS:
+                if scrape_mode == 'keyword' and getattr(self.config, 'INTENT_KEYWORDS', None):
                     text_lower = message.text.lower()
                     found_kw = None
-                    for kw in self.config.BUYER_KEYWORDS:
+                    for kw in self.config.INTENT_KEYWORDS:
                         if kw.strip() and kw.strip().lower() in text_lower:
                             found_kw = kw.strip()
                             break
@@ -416,7 +416,7 @@ class TelegramScraper:
                     classification = classify_message(
                         message.text,
                         self.config.SELLER_KEYWORDS,
-                        self.config.BUYER_KEYWORDS
+                        getattr(self.config, 'INTENT_KEYWORDS', [])
                     )
 
                 # Convert UTC message date to Bangladesh local time (UTC+6) for display/saving
@@ -638,7 +638,7 @@ def main():
     print(f"Timeout: {config.TIMEOUT_SECONDS}s")
     print(f"Output: {config.OUTPUT_FORMAT.upper()} in {config.OUTPUT_DIR}/")
     print(f"Seller keywords: {len(config.SELLER_KEYWORDS)} terms")
-    print(f"Buyer keywords: {len(config.BUYER_KEYWORDS)} terms")
+    print(f"Buyer keywords: {len(getattr(config, 'INTENT_KEYWORDS', []))} terms")
     print("=" * 60)
 
     if not validate_config(config):

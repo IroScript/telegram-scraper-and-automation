@@ -13,7 +13,7 @@ from buyer_detector import BuyerDetector
 from storage_handler import StorageHandler
 from llm_analyzer import LLMBuyerAnalyzer
 
-TEST_DIR = Path("/home/mdkamruzzamanirak_gmail_com/telegram-bot")
+TEST_DIR = Path(__file__).parent.resolve()
 TEST_JSON = TEST_DIR / "test_buyers.json"
 TEST_CSV = TEST_DIR / "test_buyers.csv"
 

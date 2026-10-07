@@ -568,6 +568,10 @@ If IS a buyer:
 Messages:
 {joined_batch}
 
+Classification Rules:
+- If the sender is SELLING, OFFERING, ADVERTISING (WTS/for sale), PROMOTING, or CASUALLY CHATTING (such as greetings, questions, chat), buyer MUST be false.
+- ONLY set buyer to true if the sender clearly indicates they WANT TO BUY (WTB), NEED TO HIRE, or ARE SEEKING to purchase a product or service.
+
 For each message, determine:
 - id: <message_id>
 - buyer: true/false
@@ -583,13 +587,13 @@ Respond ONLY with a valid JSON object containing an array 'results' matching thi
   "results": [
     {{
       "id": <message_id>,
-      "buyer": true,
-      "need": "...",
-      "budget": "...",
-      "quantity": "...",
-      "urgency": "HIGH",
-      "confidence": 0.95,
-      "evidence": "..."
+      "buyer": false,
+      "need": null,
+      "budget": null,
+      "quantity": null,
+      "urgency": "NONE",
+      "confidence": 0.0,
+      "evidence": null
     }}
   ]
 }}"""

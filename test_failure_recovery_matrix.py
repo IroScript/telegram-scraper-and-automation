@@ -45,6 +45,8 @@ def run_failure_matrix():
         "PATH": "/usr/bin:/bin"
     }
 
+    # Ensure database schema is initialized
+    database.init_db()
     # Pre-test cleanup for idempotency
     conn = database.get_connection()
     conn.execute("DELETE FROM scrape_state WHERE chat_id IN (-999888, -999889)")
@@ -132,7 +134,7 @@ def run_failure_matrix():
         conn2 = database.get_connection()
         conn1.execute("BEGIN IMMEDIATE")
         # In WAL mode, reads from conn2 are never blocked even during write transaction
-        read_check = conn2.execute("SELECT COUNT(*) FROM scrape_state").fetchone()[0]
+        read_check = conn2.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         assert read_check >= 1
         conn1.rollback()
         conn1.close()

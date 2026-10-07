@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional
 try:
     from config import RAW_MESSAGES_FILE, JSON_OUTPUT_FILE, CSV_OUTPUT_FILE
 except ImportError:
-    BASE_DIR = Path("/home/mdkamruzzamanirak_gmail_com/telegram-bot")
+    BASE_DIR = Path(os.getenv("TG_BASE_DIR", str(Path(__file__).parent.resolve())))
     RAW_MESSAGES_FILE = BASE_DIR / "raw_messages.json"
     JSON_OUTPUT_FILE = BASE_DIR / "buyers.json"
     CSV_OUTPUT_FILE = BASE_DIR / "buyers.csv"
